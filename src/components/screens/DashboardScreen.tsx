@@ -5,6 +5,11 @@ import { ShieldAlert, Trophy, CreditCard, ChevronRight, Download, FileText, Send
 export default function DashboardScreen() {
   const { currentUser, contributions, projects, selectProject, setPage, logout } = useApp();
 
+  // State for support message simulation
+  const [supportMessage, setSupportMessage] = useState('');
+  const [supportSent, setSupportSent] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+
   // If there is no user logged in, we prompt them to auth
   if (!currentUser) {
     return (
@@ -20,16 +25,11 @@ export default function DashboardScreen() {
           onClick={() => setPage('auth')}
           className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl text-sm transition-all cursor-pointer"
         >
-          Sign In as Sarah Jenkins
+          Sign In
         </button>
       </div>
     );
   }
-
-  // State for support message simulation
-  const [supportMessage, setSupportMessage] = useState('');
-  const [supportSent, setSupportSent] = useState(false);
-  const [downloadingReport, setDownloadingReport] = useState(false);
 
   const handleSupportSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -46,7 +46,7 @@ export default function DashboardScreen() {
     setTimeout(() => {
       setDownloadingReport(false);
       // Simulate download
-      alert('Downloaded: Kindred_Q3_Impact_Report_Sarah_Jenkins.pdf (Contains certified transaction ledgers and field survival photo logs.)');
+      alert(`Downloaded: Kindred_Q3_Impact_Report_${currentUser.name.replace(/\s+/g, '_')}.pdf (Contains certified transaction ledgers and field survival photo logs.)`);
     }, 1500);
   };
 
@@ -269,7 +269,7 @@ export default function DashboardScreen() {
             
             <div className="space-y-1">
               <h3 className="font-display font-extrabold text-slate-800 text-base">{currentUser.name}</h3>
-              <p className="text-xs text-slate-400">Sarah Jenkins • Member since {currentUser.memberSince}</p>
+              <p className="text-xs text-slate-400">Verified Supporter • Member since {currentUser.memberSince}</p>
             </div>
 
             <div className="flex justify-center gap-2">

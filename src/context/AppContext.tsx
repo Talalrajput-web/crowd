@@ -1,6 +1,24 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Project, User, Contribution, Category, Urgency, ProjectComment } from '../types';
+import { Project, User, Contribution, ProjectComment } from '../types';
 import { INITIAL_PROJECTS, INITIAL_USER, INITIAL_CONTRIBUTIONS } from '../data';
+import { auth, db, googleProvider } from '../lib/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  updateDoc, 
+  onSnapshot, 
+  query, 
+  where,
+  getDoc
+} from 'firebase/firestore';
 
 interface AppContextType {
   projects: Project[];
@@ -9,36 +27,27 @@ interface AppContextType {
   activePage: 'landing' | 'browse' | 'project-detail' | 'org-profile' | 'dashboard' | 'checkout' | 'auth';
   selectedProjectId: string;
   donationDraft: { amount: number; isRecurring: boolean; projectId: string } | null;
+  isLoading: boolean;
   
   setPage: (page: 'landing' | 'browse' | 'project-detail' | 'org-profile' | 'dashboard' | 'checkout' | 'auth') => void;
   selectProject: (id: string) => void;
   prepareDonation: (projectId: string, amount: number, isRecurring: boolean) => void;
-  submitDonation: (isAnonymous: boolean, name?: string, email?: string) => { success: boolean; error?: string };
-  addComment: (projectId: string, content: string) => void;
-  login: (email: string, name: string) => void;
-  logout: () => void;
-  resetAll: () => void;
+  submitDonation: (isAnonymous: boolean, name?: string, email?: string) => Promise<{ success: boolean; error?: string }>;
+  addComment: (projectId: string, content: string) => Promise<void>;
+  loginWithEmail: (email: string, password: string, isSignUp: boolean, name: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, password: string, isSignUp: boolean, name: string) => Promise<{ success: boolean; error?: string }>;
+  logout: () => Promise<void>;
+  resetAll: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Load initial data from localStorage or fallback
-  const [projects, setProjects] = useState<Project[]>(() => {
-    const saved = localStorage.getItem('kindred_projects');
-    return saved ? JSON.parse(saved) : INITIAL_PROJECTS;
-  });
-
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('kindred_user');
-    if (saved === 'null') return null;
-    return saved ? JSON.parse(saved) : INITIAL_USER;
-  });
-
-  const [contributions, setContributions] = useState<Contribution[]>(() => {
-    const saved = localStorage.getItem('kindred_contributions');
-    return saved ? JSON.parse(saved) : INITIAL_CONTRIBUTIONS;
-  });
+  const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const [activePage, setActivePage] = useState<'landing' | 'browse' | 'project-detail' | 'org-profile' | 'dashboard' | 'checkout' | 'auth'>(() => {
     const saved = localStorage.getItem('kindred_active_page');
@@ -55,19 +64,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Sync state to localStorage
-  useEffect(() => {
-    localStorage.setItem('kindred_projects', JSON.stringify(projects));
-  }, [projects]);
-
-  useEffect(() => {
-    localStorage.setItem('kindred_user', JSON.stringify(currentUser));
-  }, [currentUser]);
-
-  useEffect(() => {
-    localStorage.setItem('kindred_contributions', JSON.stringify(contributions));
-  }, [contributions]);
-
+  // Sync basic UI parameters to localStorage
   useEffect(() => {
     localStorage.setItem('kindred_active_page', activePage);
   }, [activePage]);
@@ -79,6 +76,92 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem('kindred_donation_draft', JSON.stringify(donationDraft));
   }, [donationDraft]);
+
+  // Real-time Firebase Sync
+  useEffect(() => {
+    // 1. Listen to real-time Projects in Firestore
+    const unsubscribeProjects = onSnapshot(collection(db, 'projects'), (snapshot) => {
+      if (snapshot.empty) {
+        // Seed projects if database is clean
+        INITIAL_PROJECTS.forEach((proj) => {
+          setDoc(doc(db, 'projects', proj.id), proj);
+        });
+      } else {
+        const projs: Project[] = [];
+        snapshot.forEach((doc) => {
+          projs.push(doc.data() as Project);
+        });
+        setProjects(projs);
+      }
+    }, (error) => {
+      console.error("Firestore projects error:", error);
+    });
+
+    // 2. Listen to Firebase Auth state change
+    let unsubscribeUserDoc: (() => void) | null = null;
+    let unsubscribeContribs: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      setIsLoading(true);
+      if (unsubscribeUserDoc) unsubscribeUserDoc();
+      if (unsubscribeContribs) unsubscribeContribs();
+
+      if (firebaseUser) {
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+        
+        // Listen to User Profile in Firestore
+        unsubscribeUserDoc = onSnapshot(userDocRef, async (userSnap) => {
+          if (userSnap.exists()) {
+            setCurrentUser(userSnap.data() as User);
+          } else {
+            // Document might not exist yet if created by SignUp, wait or create
+            const newUserProfile: User = {
+              id: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Kindred Supporter',
+              avatar: firebaseUser.photoURL || 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg',
+              memberSince: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+              verificationLevel: 2,
+              recurringDonationsCount: 0,
+              totalDonated: 0
+            };
+            await setDoc(userDocRef, newUserProfile);
+            setCurrentUser(newUserProfile);
+          }
+          setIsLoading(false);
+        }, (error) => {
+          console.error("User profile snapshot error:", error);
+          setIsLoading(false);
+        });
+
+        // Listen to User's Contributions in Firestore
+        const contribsQuery = query(collection(db, 'contributions'), where('userId', '==', firebaseUser.uid));
+        unsubscribeContribs = onSnapshot(contribsQuery, (snapshot) => {
+          const list: Contribution[] = [];
+          snapshot.forEach((doc) => {
+            list.push(doc.data() as Contribution);
+          });
+          // Sort descending
+          list.sort((a, b) => b.id.localeCompare(a.id));
+          setContributions(list);
+        }, (error) => {
+          console.error("Contributions snapshot error:", error);
+        });
+
+      } else {
+        setCurrentUser(null);
+        setContributions([]);
+        setIsLoading(false);
+      }
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeAuth();
+      if (unsubscribeUserDoc) unsubscribeUserDoc();
+      if (unsubscribeContribs) unsubscribeContribs();
+    };
+  }, []);
 
   // Page switcher
   const setPage = (page: 'landing' | 'browse' | 'project-detail' | 'org-profile' | 'dashboard' | 'checkout' | 'auth') => {
@@ -99,141 +182,191 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   // Finalize donation on checkout
-  const submitDonation = (isAnonymous: boolean, name?: string, email?: string) => {
+  const submitDonation = async (isAnonymous: boolean, name?: string, email?: string) => {
     if (!donationDraft) return { success: false, error: 'No active donation draft' };
 
     const project = projects.find(p => p.id === donationDraft.projectId);
     if (!project) return { success: false, error: 'Project not found' };
 
-    // 1. Create contribution record
-    const newContribution: Contribution = {
-      id: `tx-${Date.now()}`,
-      projectId: project.id,
-      projectTitle: project.title,
-      projectImage: project.image,
-      amount: donationDraft.amount,
-      date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-      isRecurring: donationDraft.isRecurring,
-      isAnonymous: isAnonymous,
-      status: 'Completed'
-    };
-
-    // 2. Update user stats if logged in
-    if (currentUser) {
-      const updatedUser: User = {
-        ...currentUser,
-        totalDonated: currentUser.totalDonated + donationDraft.amount,
-        recurringDonationsCount: donationDraft.isRecurring 
-          ? currentUser.recurringDonationsCount + 1 
-          : currentUser.recurringDonationsCount
+    try {
+      const txId = `tx-${Date.now()}`;
+      
+      // 1. Create contribution record in Firestore
+      const newContribution: Contribution = {
+        id: txId,
+        projectId: project.id,
+        projectTitle: project.title,
+        projectImage: project.image,
+        amount: donationDraft.amount,
+        date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+        isRecurring: donationDraft.isRecurring,
+        isAnonymous: isAnonymous,
+        status: 'Completed'
       };
-      setCurrentUser(updatedUser);
-    }
+      
+      // Add a link to userId if currentUser exists
+      const dbContribution = {
+        ...newContribution,
+        userId: currentUser ? currentUser.id : 'anonymous'
+      };
 
-    // 3. Update project details (raised amount, donor count, comments)
-    const updatedProjects = projects.map(p => {
-      if (p.id === project.id) {
-        // Add a verified donor comment placeholder
-        const commentId = `c-${Date.now()}`;
-        const newComment: ProjectComment = {
-          id: commentId,
-          userName: isAnonymous ? 'Anonymous Donor' : (currentUser?.name || name || 'Kindred Supporter'),
-          userAvatar: isAnonymous 
-            ? 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg'
-            : (currentUser?.avatar || 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg'),
-          content: `Backed this project with a tax-deductible contribution of $${donationDraft.amount.toFixed(2)}! Keep up the inspiring work.`,
-          date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-          amountDonated: donationDraft.amount,
-          likes: 0
-        };
+      await setDoc(doc(db, 'contributions', txId), dbContribution);
 
-        return {
-          ...p,
-          raisedAmount: p.raisedAmount + donationDraft.amount,
-          donorCount: p.donorCount + 1,
-          comments: [newComment, ...p.comments]
-        };
+      // 2. Update user stats in Firestore
+      if (currentUser) {
+        const userDocRef = doc(db, 'users', currentUser.id);
+        await updateDoc(userDocRef, {
+          totalDonated: currentUser.totalDonated + donationDraft.amount,
+          recurringDonationsCount: donationDraft.isRecurring 
+            ? currentUser.recurringDonationsCount + 1 
+            : currentUser.recurringDonationsCount
+        });
       }
-      return p;
-    });
 
-    setProjects(updatedProjects);
-    setContributions([newContribution, ...contributions]);
-    setDonationDraft(null);
+      // 3. Update project details (raised amount, donor count, comments) in Firestore
+      const commentId = `c-${Date.now()}`;
+      const newComment: ProjectComment = {
+        id: commentId,
+        userName: isAnonymous ? 'Anonymous Donor' : (currentUser?.name || name || 'Kindred Supporter'),
+        userAvatar: isAnonymous 
+          ? 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg'
+          : (currentUser?.avatar || 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg'),
+        content: `Backed this project with a tax-deductible contribution of $${donationDraft.amount.toFixed(2)}! Keep up the inspiring work.`,
+        date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+        amountDonated: donationDraft.amount,
+        likes: 0
+      };
 
-    // Redirect to success or dashboard
-    setPage('dashboard');
-    return { success: true };
+      const projDocRef = doc(db, 'projects', project.id);
+      await updateDoc(projDocRef, {
+        raisedAmount: project.raisedAmount + donationDraft.amount,
+        donorCount: project.donorCount + 1,
+        comments: [newComment, ...project.comments]
+      });
+
+      setDonationDraft(null);
+      setPage('dashboard');
+      return { success: true };
+    } catch (e: any) {
+      console.error("Donation execution failed:", e);
+      return { success: false, error: e.message || "Unknown error during transaction processing" };
+    }
   };
 
   // Add normal comment
-  const addComment = (projectId: string, content: string) => {
+  const addComment = async (projectId: string, content: string) => {
     if (!currentUser) return;
     
-    setProjects(prevProjects => prevProjects.map(p => {
-      if (p.id === projectId) {
-        const hasDonated = contributions.some(c => c.projectId === projectId);
-        const lastDonation = contributions.find(c => c.projectId === projectId);
-        const donatedAmount = hasDonated && lastDonation ? lastDonation.amount : 0;
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return;
 
-        const newComment: ProjectComment = {
-          id: `c-${Date.now()}`,
-          userName: currentUser.name,
-          userAvatar: currentUser.avatar,
-          content: content,
-          date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-          amountDonated: donatedAmount,
-          likes: 0
-        };
-        return {
-          ...p,
-          comments: [newComment, ...p.comments]
-        };
-      }
-      return p;
-    }));
-  };
+    try {
+      const hasDonated = contributions.some(c => c.projectId === projectId);
+      const lastDonation = contributions.find(c => c.projectId === projectId);
+      const donatedAmount = hasDonated && lastDonation ? lastDonation.amount : 0;
 
-  // Simple Auth actions
-  const login = (email: string, name: string) => {
-    const newUser: User = {
-      id: email.split('@')[0],
-      email: email,
-      name: name || 'Sarah Jenkins',
-      avatar: name.toLowerCase().includes('sarah') 
-        ? 'https://lh3.googleusercontent.com/aida-public/AB6AXuBvrrytExK0ui02ZsX2WtTr-VYIlKodjZCNh-N96ICkaP4551yA6dv5twE5OIq3xSbwHLuvhmEBDH_M1J-fWhJ73gezupfJE_KhEa0KaDgptVsY-AyA8xMUv0TDXCSnJzxGYUViA5yqCB_c0VPnAxqYJMGOLIIZvvGyPU-0KcQ3eSRusv0hG10JKL5-dXsPAMAA5_HL198KV-JA9H0FW1t5Isa4rQAZ4eknWstbUjMTihRVE8YGLGbFUg'
-        : 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg',
-      memberSince: 'July 2026',
-      verificationLevel: 2,
-      recurringDonationsCount: 0,
-      totalDonated: 0
-    };
-    setCurrentUser(newUser);
-    
-    // If we have default Sarah, keep her transactions, otherwise clear for new user demo
-    if (name.toLowerCase().includes('sarah') || name === 'Sarah Jenkins') {
-      setCurrentUser(INITIAL_USER);
-      setContributions(INITIAL_CONTRIBUTIONS);
-    } else {
-      setContributions([]);
+      const newComment: ProjectComment = {
+        id: `c-${Date.now()}`,
+        userName: currentUser.name,
+        userAvatar: currentUser.avatar,
+        content: content,
+        date: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+        amountDonated: donatedAmount,
+        likes: 0
+      };
+
+      const projDocRef = doc(db, 'projects', projectId);
+      await updateDoc(projDocRef, {
+        comments: [newComment, ...project.comments]
+      });
+    } catch (e) {
+      console.error("Failed to post comment:", e);
     }
-    setPage('dashboard');
   };
 
-  const logout = () => {
-    setCurrentUser(null);
-    setContributions([]);
-    setPage('landing');
+  // Firebase Authentication actions
+  const loginWithEmail = async (email: string, password: string, isSignUp: boolean, name: string) => {
+    try {
+      if (isSignUp) {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const firebaseUser = userCredential.user;
+        
+        // Create user document in Firestore
+        const newUserProfile: User = {
+          id: firebaseUser.uid,
+          email: email,
+          name: name || email.split('@')[0],
+          avatar: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg',
+          memberSince: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+          verificationLevel: 2,
+          recurringDonationsCount: 0,
+          totalDonated: 0
+        };
+        await setDoc(doc(db, 'users', firebaseUser.uid), newUserProfile);
+        setCurrentUser(newUserProfile);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+      setPage('dashboard');
+      return { success: true };
+    } catch (e: any) {
+      console.error("Auth action failed:", e);
+      return { success: false, error: e.message || "Authentication failed" };
+    }
   };
 
-  const resetAll = () => {
-    localStorage.clear();
-    setProjects(INITIAL_PROJECTS);
-    setCurrentUser(INITIAL_USER);
-    setContributions(INITIAL_CONTRIBUTIONS);
-    setSelectedProjectId('amazon-canopy');
-    setDonationDraft(null);
-    setActivePage('landing');
+  const loginWithGoogle = async () => {
+    try {
+      const userCredential = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = userCredential.user;
+      
+      const userDocRef = doc(db, 'users', firebaseUser.uid);
+      const userSnap = await getDoc(userDocRef);
+      
+      if (!userSnap.exists()) {
+        const newUserProfile: User = {
+          id: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Kindred Supporter',
+          avatar: firebaseUser.photoURL || 'https://lh3.googleusercontent.com/aida-public/AB6AXuBYkD54FGxMSHLUxHNadUljaJmEHwSMRXkb-HoQsc1dcbM3vzpSjHR7c7U3GriJVmVtNbBpp90chbkaq8fEuiBq42neFIzYtedVzJcQ-BS4SNSSwbxiXAm4-h2ufxbJ3REy3SFTOpcVbiXJppk6TSo9i-aYvyhHV5AGiaXxtMP0LVhQTjAbV1Ai87-ExWInKbBKil2NxthLPPP9IscE-6XAaZ7z-c8b86TvxpVhHiBSKZ4jiZ50bktVVg',
+          memberSince: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+          verificationLevel: 2,
+          recurringDonationsCount: 0,
+          totalDonated: 0
+        };
+        await setDoc(userDocRef, newUserProfile);
+        setCurrentUser(newUserProfile);
+      }
+      setPage('dashboard');
+      return { success: true };
+    } catch (e: any) {
+      console.error("Google Sign-In failed:", e);
+      return { success: false, error: e.message || "Google Sign-In failed" };
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setContributions([]);
+      setPage('landing');
+    } catch (e) {
+      console.error("Sign-out failed:", e);
+    }
+  };
+
+  const resetAll = async () => {
+    try {
+      const batchPromises = INITIAL_PROJECTS.map((proj) => setDoc(doc(db, 'projects', proj.id), proj));
+      await Promise.all(batchPromises);
+      await signOut(auth);
+      setCurrentUser(null);
+      setContributions([]);
+      setPage('landing');
+    } catch (e) {
+      console.error("Reset failed:", e);
+    }
   };
 
   return (
@@ -244,12 +377,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activePage,
       selectedProjectId,
       donationDraft,
+      isLoading,
       setPage,
       selectProject,
       prepareDonation,
       submitDonation,
       addComment,
-      login,
+      loginWithEmail,
+      loginWithGoogle,
+      login: loginWithEmail, // backward-compatible mapping
       logout,
       resetAll
     }}>

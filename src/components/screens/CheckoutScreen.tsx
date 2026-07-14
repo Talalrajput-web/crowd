@@ -31,9 +31,9 @@ export default function CheckoutScreen() {
   const [firstName, setFirstName] = useState(currentUser ? currentUser.name.split(' ')[0] : '');
   const [lastName, setLastName] = useState(currentUser ? currentUser.name.split(' ')[1] || '' : '');
   const [email, setEmail] = useState(currentUser ? currentUser.email : '');
-  const [cardNumber, setCardNumber] = useState('4111 2222 3333 4444');
-  const [cardExpiry, setCardExpiry] = useState('12/28');
-  const [cardCVC, setCardCVC] = useState('123');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
+  const [cardCVC, setCardCVC] = useState('');
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'paypal'>('card');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,24 +42,20 @@ export default function CheckoutScreen() {
   const platformFee = 7.50; // Flat platform processing maintenance fee
   const totalAmount = donationDraft.amount + platformFee;
 
-  const handleCheckoutSubmit = (e: FormEvent) => {
+  const handleCheckoutSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
 
-    setTimeout(() => {
-      // Execute contribution transaction inside Context state
-      const fullName = `${firstName} ${lastName}`.trim() || 'Anonymous Supporter';
-      const emailAddr = email || 'anonymous@kindred.org';
-      
-      const res = submitDonation(isAnonymous, fullName, emailAddr);
-      setIsSubmitting(false);
+    // Execute contribution transaction inside Context state
+    const fullName = `${firstName} ${lastName}`.trim() || 'Anonymous Supporter';
+    const emailAddr = email || 'anonymous@kindred.org';
+    
+    const res = await submitDonation(isAnonymous, fullName, emailAddr);
+    setIsSubmitting(false);
 
-      if (res.success) {
-        // Redirection handled inside submitDonation context (to dashboard)
-      } else {
-        alert(`Error executing donation: ${res.error}`);
-      }
-    }, 1500);
+    if (!res.success) {
+      alert(`Error executing donation: ${res.error}`);
+    }
   };
 
   return (
@@ -100,7 +96,7 @@ export default function CheckoutScreen() {
                 <input
                   type="text"
                   required
-                  placeholder="Sarah"
+                  placeholder="Alex"
                   value={firstName}
                   onChange={(e) => setFirstName(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
@@ -111,7 +107,7 @@ export default function CheckoutScreen() {
                 <input
                   type="text"
                   required
-                  placeholder="Jenkins"
+                  placeholder="Rivera"
                   value={lastName}
                   onChange={(e) => setLastName(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
@@ -124,7 +120,7 @@ export default function CheckoutScreen() {
               <input
                 type="email"
                 required
-                placeholder="sarah.jenkins@impact.org"
+                placeholder="alex.rivera@impact.org"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-emerald-500"

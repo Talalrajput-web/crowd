@@ -7,6 +7,19 @@ export default function LandingScreen() {
   // Pick top 3 projects to showcase on Landing
   const featuredProjects = projects.slice(0, 3);
 
+  // Find latest donation comment across all projects dynamically
+  const allDonationComments = projects.flatMap(p => 
+    (p.comments || []).map(c => ({ ...c, projectTitle: p.title }))
+  ).filter(c => c.amountDonated && c.amountDonated > 0);
+
+  // Fallback if no real donations exist in the database yet
+  const latestDonation = allDonationComments[0] || {
+    userName: 'Alex Rivera',
+    amountDonated: 150.00,
+    projectTitle: 'Roots of Resilience: Amazon',
+    userAvatar: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBvrrytExK0ui02ZsX2WtTr-VYIlKodjZCNh-N96ICkaP4551yA6dv5twE5OIq3xSbwHLuvhmEBDH_M1J-fWhJ73gezupfJE_KhEa0KaDgptVsY-AyA8xMUv0TDXCSnJzxGYUViA5yqCB_c0VPnAxqYJMGOLIIZvvGyPU-0KcQ3eSRusv0hG10JKL5-dXsPAMAA5_HL198KV-JA9H0FW1t5Isa4rQAZ4eknWstbUjMTihRVE8YGLGbFUg'
+  };
+
   return (
     <div className="space-y-16 py-8" id="landing-screen">
       
@@ -53,20 +66,20 @@ export default function LandingScreen() {
             </div>
           </div>
 
-          {/* Floating Live Contribution Widget (Simulation) */}
-          <div className="hidden lg:block absolute bottom-8 right-8 z-20 bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/10 max-w-xs text-xs">
-            <p className="text-slate-300 font-mono uppercase tracking-wider text-[10px] mb-1.5">RECENT IMPACT FEED</p>
+          {/* Floating Live Contribution Widget (Dynamic) */}
+          <div className="hidden lg:block absolute bottom-8 right-8 z-20 bg-white/10 backdrop-blur-md rounded-2xl p-4 border border-white/10 max-w-xs text-xs animate-pulse">
+            <p className="text-slate-300 font-mono uppercase tracking-wider text-[10px] mb-1.5">LIVE IMPACT FEED</p>
             <div className="flex items-center gap-3">
               <img
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuBvrrytExK0ui02ZsX2WtTr-VYIlKodjZCNh-N96ICkaP4551yA6dv5twE5OIq3xSbwHLuvhmEBDH_M1J-fWhJ73gezupfJE_KhEa0KaDgptVsY-AyA8xMUv0TDXCSnJzxGYUViA5yqCB_c0VPnAxqYJMGOLIIZvvGyPU-0KcQ3eSRusv0hG10JKL5-dXsPAMAA5_HL198KV-JA9H0FW1t5Isa4rQAZ4eknWstbUjMTihRVE8YGLGbFUg"
-                alt="Sarah"
+                src={latestDonation.userAvatar}
+                alt={latestDonation.userName}
                 className="h-8 w-8 rounded-full border border-white/20 object-cover"
                 referrerPolicy="no-referrer"
               />
               <div>
-                <p className="text-white font-semibold">Sarah Jenkins</p>
-                <p className="text-emerald-400 font-bold">contributed $250.00</p>
-                <p className="text-slate-300 text-[10px] truncate max-w-[180px]">Roots of Resilience: Amazon</p>
+                <p className="text-white font-semibold">{latestDonation.userName}</p>
+                <p className="text-emerald-400 font-bold">pledged ${latestDonation.amountDonated?.toFixed(2)}</p>
+                <p className="text-slate-300 text-[10px] truncate max-w-[180px]">{latestDonation.projectTitle}</p>
               </div>
             </div>
           </div>
